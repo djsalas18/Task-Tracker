@@ -1,0 +1,168 @@
+# 🎯 Clean CI Configuration for Sprint Database, Selenium, and Playwright
+
+name: Python application
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'README*'
+  pull_request:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'README*'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.13.5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Install Playwright browsers
+        run: |
+          playwright install
+      
+      - name: Prepare test environment
+        run: |
+          # Set testing environment variables
+          export TESTING=true
+          export CI=true
+          export PYTHONDONTWRITEBYTECODE=1
+          # Suppress ResourceWarnings for cleaner CI output
+          export PYTHONWARNINGS="ignore:unclosed:ResourceWarning"
+          # Create necessary directories for cross-platform compatibility
+          mkdir -p app/data
+          # Clean up any existing files
+          rm -f tasks.db app/data/tasks.json
+          rm -f /tmp/tasks.db 2>/dev/null || true  # Clean temp dir, ignore if doesn't exist
+          echo "✅ Test environment prepared"
+      
+      - name: Setup Selenium environment for CI
+        run: |
+          # Start virtual display for headless browser testing
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+          sleep 2
+          echo "✅ Virtual display started for Selenium tests"
+      
+      - name: Ensure clean database file
+        run: |
+          # Clean up database files in all possible locations
+          rm -f tasks.db
+          rm -f /tmp/tasks.db 2>/dev/null || true  # Clean temp dir, ignore if doesn't exist
+          echo "✅ Database files cleaned"
+      
+      # 1. Run Unit Tests (fastest, catch logic errors early)
+      - name: Run Unit Tests (Excludes API, UI, and External Tests)
+        run: |
+          # Set environment variables for testing
+          export TESTING=true
+          export CI=true
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONWARNINGS="ignore:unclosed:ResourceWarning,ignore::pytest.PytestReturnNotNoneWarning"
+          
+          # Run unit tests excluding:
+          # - API integration tests
+          # - UI (Selenium/Playwright) tests
+          # - BDD tests (need Flask server)
+          # - External tests (e.g., time API)
+          pytest --cov=app \
+                --cov-report=term-missing \
+                --cov-report=html \
+                --junitxml=results.xml \
+                --ignore=tests/integration/api/ \
+                --ignore=tests/e2e/ui/selenium/pytest/test_selenium_pytest.py \
+                --ignore=tests/e2e/ui/playwright/pytest/test_playwright_pytest.py \
+                --ignore=tests/e2e/acceptance/bdd_playwright/ \
+                -m "not external"
+        env:
+          TESTING: true
+          CI: true
+          PYTHONDONTWRITEBYTECODE: 1
+          PYTHONWARNINGS: "ignore:unclosed:ResourceWarning,ignore::pytest.PytestReturnNotNoneWarning"
+      
+      # 2. Run API/Integration Tests (check backend and service interactions)
+      - name: Start Flask server for API tests
+        run: |
+          # Start Flask server in background for API tests
+          export TESTING=true
+          export CI=true
+          nohup python -m app.main > flask_server.log 2>&1 &
+          sleep 3
+          echo "Flask server started"
+
+      - name: Wait for Flask server to be ready
+        run: |
+          for i in {1..20}; do
+            if curl -s http://localhost:5000/api/health > /dev/null; then
+              echo "Flask server is ready!"
+              break
+            fi
+            echo "Waiting for Flask server... ($i/20)"
+            sleep 1
+          done
+          # Final health check
+          if curl -s http://localhost:5000/api/health > /dev/null; then
+            echo "✅ Server health check passed"
+          else
+            echo "❌ Server health check failed"
+            cat flask_server.log || true
+            exit 1
+          fi
+
+      - name: Run API tests
+        run: |
+          # Set environment variables for API testing
+          export TESTING=true
+          export CI=true
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONWARNINGS="ignore:unclosed:ResourceWarning,ignore::pytest.PytestReturnNotNoneWarning"
+          pytest tests/integration/api/ -v
+        env:
+          TESTING: true
+          CI: true
+          PYTHONDONTWRITEBYTECODE: 1
+          PYTHONWARNINGS: "ignore:unclosed:ResourceWarning,ignore::pytest.PytestReturnNotNoneWarning"
+
+      - name: Run Selenium pytest UI tests
+        run: |
+          export TESTING=true
+          export CI=true
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONWARNINGS="ignore:unclosed:ResourceWarning,ignore::pytest.PytestReturnNotNoneWarning"
+          pytest tests/e2e/ui/selenium/pytest/test_selenium_pytest.py -v
+        env:
+          TESTING: true
+          CI: true
+          PYTHONDONTWRITEBYTECODE: 1
+          PYTHONWARNINGS: "ignore:unclosed:ResourceWarning,ignore::pytest.PytestReturnNotNoneWarning"
+
+      - name: Run Playwright pytest UI tests
+        run: |
+          export TESTING=true
+          export CI=true
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONWARNINGS="ignore:unclosed:ResourceWarning,ignore::pytest.PytestReturnNotNoneWarning"
+          pytest tests/e2e/ui/playwright/pytest/test_playwright_pytest.py -v
+        env:
+          TESTING: true
+          CI: true
+          PYTHONDONTWRITEBYTECODE: 1
+          PYTHONWARNINGS: "ignore:unclosed:ResourceWarning,ignore::pytest.PytestReturnNotNoneWarning"
+
